@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>物理教学：洛伦兹力与螺旋运动</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Segoe UI', sans-serif; }
+        
+        /* 教学面板 */
+        #info-panel {
+            position: absolute; top: 20px; left: 20px; 
+            background: rgba(20, 20, 30, 0.9); color: #00aaff; 
+            padding: 20px; border-radius: 8px; border-left: 4px solid #00aaff;
+            pointer-events: none; user-select: none;
+            box-shadow: 0 0 20px rgba(0, 170, 255, 0.2);
+            width: 280px;
+        }
+        h2 { margin: 0 0 10px 0; font-size: 20px; color: white; }
+        .formula { font-family: 'Times New Roman', serif; font-style: italic; font-size: 18px; color: #ffcc00; margin: 10px 0; text-align: center; }
+        .desc { font-size: 13px; color: #ccc; line-height: 1.6; }
+        .key-point { color: #ff3366; font-weight: bold; }
+
+        /* 标签 */
+        .label {
+            position: absolute; color: white; font-weight: bold; text-shadow: 0 0 5px black;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="info-panel">
+        <h2>洛伦兹力实验室</h2>
+        <div class="formula">F = q(v × B)</div>
+        <div class="desc">
+            观察带电粒子在磁场中的运动轨迹。<br>
+            • <span style="color:#ffff00">黄色箭头</span>: 磁场方向 (B)<br>
+            • <span style="color:#00ff00">绿色箭头</span>: 速度方向 (v)<br>
+            • <span style="color:#ff3366">红色箭头</span>: 受力方向 (F)<br>
+            <br>
+            <strong>教学挑战:</strong><br>
+            试着给一个与磁场不垂直的初速度，观察<span class="key-point">螺旋运动</span>的产生！
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+        // --- 物理参数 ---
+        const PHYSICS = {
+            // 粒子属性
+            q: 1.0,     // 电荷量 (正电荷)
+            m: 1.0,     // 质量
+            
+            // 初速度向量
+            vx: 5.0,
+            vy: 0.0,
+            vz: 2.0,    // 给一点Z轴速度，方便演示螺旋
+            
+            // 磁场向量
+            bx: 0.0,
+            by: 2.0,    // 磁场默认向上
+            bz: 0.0,
+
+            // 系统控制
+            timeScale: 0.5, // 慢动作
+            reset: () => resetSimulation(),
+            showVectors: true // 显示矢量箭头
+        };
+
+        // --- 核心变量 ---
+        let scene, camera, renderer, controls;
+        let particle; // 粒子 Mesh
+        let trail;    // 轨迹线
+        let trailPoints = [];
+        const MAX_TRAIL_LENGTH = 1000; // 轨迹保留长度
+
+        // 矢量箭头辅助 (ArrowHelpers)
+        let arrowV, arrowB, arrowF; 
+
+        // 实时运动状态
+        let position = new THREE.Vector3(0, 0, 0);
+        let velocity = new THREE.Vector3(0, 0, 0);
+        let B_field = new THREE.Vector3(0, 0, 0);
+
+        init();
+        animate();
+
+        function init() {
+            // 1. 场景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+            
+            // 2. 相机
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(20, 20, 40);
+
+            // 3. 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // 4. 环境辅助
+            const grid = new THREE.GridHelper(40, 40, 0x333333, 0x111111);
+            scene.add(grid);
+            const axes = new THREE.AxesHelper(5);
+            scene.add(axes);
+
+            // 5. 创建粒子
+            const geometry = new THREE.SphereGeometry(0.5, 32, 32);
+            const material = new THREE.MeshBasicMaterial({ color: 0x00aaff });
+            particle = new THREE.Mesh(geometry, material);
+            scene.add(particle);
+
+            // 创建轨迹线 (BufferGeometry)
+            const trailGeo = new THREE.BufferGeometry();
+            // 初始化顶点位置
+            const positions = new Float32Array(MAX_TRAIL_LENGTH * 3);
+            trailGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const trailMat = new THREE.LineBasicMaterial({ color: 0x00aaff, opacity: 0.6, transparent: true });
+            trail = new THREE.Line(trailGeo, trailMat);
+            // 禁用视锥体剔除，防止线画出屏幕外消失
+            trail.frustumCulled = false; 
+            scene.add(trail);
+
+            // 6. 创建矢量箭头 (起点, 方向, 长度, 颜色)
+            arrowV = new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(0,0,0), 3, 0x00ff00); // 绿: 速度
+            arrowB = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,0), 5, 0xffff00); // 黄: 磁场
+            arrowF = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,0), 3, 0xff3366); // 红: 力
+            scene.add(arrowV);
+            scene.add(arrowB);
+            scene.add(arrowF);
+
+            // 7. 控制器
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+
+            // 8. GUI
+            initGUI();
+
+            // 9. 初始化状态
+            resetSimulation();
+
+            window.addEventListener('resize', onResize);
+        }
+
+        function initGUI() {
+            const gui = new GUI({ title: '参数控制台' });
+            
+            const f1 = gui.addFolder('初始速度 v');
+            f1.add(PHYSICS, 'vx', -10, 10).name('Vx (红轴)');
+            f1.add(PHYSICS, 'vy', -10, 10).name('Vy (绿轴)');
+            f1.add(PHYSICS, 'vz', -10, 10).name('Vz (蓝轴)');
+            f1.onChange(resetSimulation); // 改变初速度时重置
+
+            const f2 = gui.addFolder('磁场 B (实时调整)');
+            f2.add(PHYSICS, 'bx', -5, 5).name('Bx (红轴)');
+            f2.add(PHYSICS, 'by', -5, 5).name('By (绿轴)');
+            f2.add(PHYSICS, 'bz', -5, 5).name('Bz (蓝轴)');
+            // 磁场改变不需要重置，可以实时看效果
+
+            const f3 = gui.addFolder('粒子属性');
+            f3.add(PHYSICS, 'q', -2, 2).name('电荷 q').onChange(resetSimulation);
+            f3.add(PHYSICS, 'm', 0.1, 5).name('质量 m').onChange(resetSimulation);
+
+            gui.add(PHYSICS, 'timeScale', 0.1, 2.0).name('时间流速');
+            gui.add(PHYSICS, 'showVectors').name('显示受力分析');
+            gui.add(PHYSICS, 'reset').name('↺ 重置实验');
+        }
+
+        function resetSimulation() {
+            position.set(0, 0, 0);
+            velocity.set(PHYSICS.vx, PHYSICS.vy, PHYSICS.vz);
+            
+            // 清空轨迹
+            trailPoints = [];
+            const positions = trail.geometry.attributes.position.array;
+            for(let i=0; i<positions.length; i++) positions[i] = 0;
+            trail.geometry.attributes.position.needsUpdate = true;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 1. 获取物理量
+            const dt = 0.016 * PHYSICS.timeScale;
+            B_field.set(PHYSICS.bx, PHYSICS.by, PHYSICS.bz);
+
+            // 2. 计算洛伦兹力 F = q(v x B)
+            // Three.js 向量叉乘: v.cross(B) 会修改 v 本身，所以要 clone
+            const F = velocity.clone().cross(B_field).multiplyScalar(PHYSICS.q);
+
+            // 3. 计算加速度 a = F / m
+            const a = F.clone().divideScalar(PHYSICS.m);
+
+            // 4. 更新速度 v = v + a * dt
+            velocity.add(a.clone().multiplyScalar(dt));
+
+            // 5. 更新位置 x = x + v * dt
+            position.add(velocity.clone().multiplyScalar(dt));
+
+            // 6. 更新视觉物体
+            particle.position.copy(position);
+
+            // --- 更新轨迹线 (贪吃蛇逻辑) ---
+            trailPoints.push(position.clone());
+            if (trailPoints.length > MAX_TRAIL_LENGTH) {
+                trailPoints.shift(); // 移除最早的点
+            }
+
+            const posArr = trail.geometry.attributes.position.array;
+            for (let i = 0; i < trailPoints.length; i++) {
+                posArr[i*3] = trailPoints[i].x;
+                posArr[i*3+1] = trailPoints[i].y;
+                posArr[i*3+2] = trailPoints[i].z;
+            }
+            // 剩余的未填充点设为当前点，防止乱连线
+            for (let i = trailPoints.length; i < MAX_TRAIL_LENGTH; i++) {
+                posArr[i*3] = position.x;
+                posArr[i*3+1] = position.y;
+                posArr[i*3+2] = position.z;
+            }
+            trail.geometry.attributes.position.needsUpdate = true;
+
+
+            // --- 更新矢量箭头 ---
+            if (PHYSICS.showVectors) {
+                arrowV.visible = true;
+                arrowB.visible = true;
+                arrowF.visible = true;
+
+                // 速度箭头 (绿色)
+                arrowV.position.copy(position);
+                if (velocity.length() > 0.01) {
+                    arrowV.setDirection(velocity.clone().normalize());
+                    arrowV.setLength(velocity.length() * 0.5); // 缩放一下显示长度
+                }
+
+                // 磁场箭头 (黄色) - 总是画在原点或者粒子位置？
+                // 为了看清局部的受力，我们把它画在粒子身上
+                arrowB.position.copy(position);
+                if (B_field.length() > 0.01) {
+                    arrowB.setDirection(B_field.clone().normalize());
+                    arrowB.setLength(B_field.length() * 2); // 磁场线画长一点
+                }
+
+                // 力箭头 (红色)
+                arrowF.position.copy(position);
+                if (F.length() > 0.01) {
+                    arrowF.setDirection(F.clone().normalize());
+                    arrowF.setLength(F.length() * 0.5);
+                }
+            } else {
+                arrowV.visible = false;
+                arrowB.visible = false;
+                arrowF.visible = false;
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    </script>
+</body>
+</html>
